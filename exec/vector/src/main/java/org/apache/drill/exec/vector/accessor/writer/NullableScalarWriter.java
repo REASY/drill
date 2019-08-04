@@ -60,6 +60,9 @@ public class NullableScalarWriter extends AbstractScalarWriterImpl {
     }
 
     @Override
+    public void prevElement() { }
+
+    @Override
     public void rollover() {
       parentIndex.rollover();
     }
@@ -70,12 +73,14 @@ public class NullableScalarWriter extends AbstractScalarWriterImpl {
     }
   }
 
+  private final NullableVector nullableVector;
   private final UInt1ColumnWriter isSetWriter;
   private final BaseScalarWriter baseWriter;
   private ColumnWriterIndex writerIndex;
 
   public NullableScalarWriter(ColumnMetadata schema, NullableVector nullableVector, BaseScalarWriter baseWriter) {
     this.schema = schema;
+    this.nullableVector = nullableVector;
     isSetWriter = new UInt1ColumnWriter(nullableVector.getBitsVector());
     this.baseWriter = baseWriter;
   }
@@ -178,6 +183,11 @@ public class NullableScalarWriter extends AbstractScalarWriterImpl {
   }
 
   @Override
+  public void appendBytes(byte[] value, int len) {
+    baseWriter.appendBytes(value, len);
+  }
+
+  @Override
   public void setDecimal(BigDecimal value) {
     baseWriter.setDecimal(value);
     isSetWriter.setInt(1);
@@ -273,6 +283,7 @@ public class NullableScalarWriter extends AbstractScalarWriterImpl {
     // Avoid back-filling null values.
     baseWriter.skipNulls();
     baseWriter.endWrite();
+    nullableVector.finalizeLastSet(writerIndex.vectorIndex());
   }
 
   @Override

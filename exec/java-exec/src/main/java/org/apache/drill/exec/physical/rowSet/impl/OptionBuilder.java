@@ -17,15 +17,13 @@
  */
 package org.apache.drill.exec.physical.rowSet.impl;
 
-import java.util.Collection;
-
-import org.apache.drill.common.expression.SchemaPath;
+import org.apache.drill.common.exceptions.CustomErrorContext;
+import org.apache.drill.exec.physical.rowSet.ProjectionSet;
 import org.apache.drill.exec.physical.rowSet.ResultVectorCache;
 import org.apache.drill.exec.physical.rowSet.impl.ResultSetLoaderImpl.ResultSetOptions;
-import org.apache.drill.exec.physical.rowSet.project.RequestedTuple;
 import org.apache.drill.exec.record.metadata.TupleMetadata;
+import org.apache.drill.exec.vector.BaseValueVector;
 import org.apache.drill.exec.vector.ValueVector;
-import org.apache.drill.shaded.guava.com.google.common.base.Preconditions;
 
 /**
  * Builder for the options for the row set loader. Reasonable defaults
@@ -36,12 +34,15 @@ import org.apache.drill.shaded.guava.com.google.common.base.Preconditions;
 public class OptionBuilder {
   protected int vectorSizeLimit;
   protected int rowCountLimit;
-  protected Collection<SchemaPath> projection;
-  protected RequestedTuple projectionSet;
   protected ResultVectorCache vectorCache;
+  protected ProjectionSet projectionSet;
   protected TupleMetadata schema;
   protected long maxBatchSize;
-  protected SchemaTransformer schemaTransformer;
+
+  /**
+   * Error message context
+   */
+  protected CustomErrorContext errorContext;
 
   public OptionBuilder() {
     // Start with the default option values.
@@ -69,31 +70,6 @@ public class OptionBuilder {
 
   public OptionBuilder setBatchSizeLimit(int bytes) {
     maxBatchSize = bytes;
-    return this;
-  }
-
-  /**
-   * Record (batch) readers often read a subset of available table columns,
-   * but want to use a writer schema that includes all columns for ease of
-   * writing. (For example, a CSV reader must read all columns, even if the user
-   * wants a subset. The unwanted columns are simply discarded.)
-   * <p>
-   * This option provides a projection list, in the form of column names, for
-   * those columns which are to be projected. Only those columns will be
-   * backed by value vectors; non-projected columns will be backed by "null"
-   * writers that discard all values.
-   *
-   * @param projection the list of projected columns
-   * @return this builder
-   */
-
-  public OptionBuilder setProjection(Collection<SchemaPath> projection) {
-    this.projection = projection;
-    return this;
-  }
-
-  public OptionBuilder setProjectionSet(RequestedTuple projectionSet) {
-    this.projectionSet = projectionSet;
     return this;
   }
 
@@ -131,23 +107,20 @@ public class OptionBuilder {
     return this;
   }
 
-  /**
-   * Provide an optional higher-level schema transformer which can convert
-   * columns from one type to another.
-   *
-   * @param transform the column conversion factory
-   * @return this builder
-   */
-  public OptionBuilder setSchemaTransform(SchemaTransformer transform) {
-    schemaTransformer = transform;
+  public OptionBuilder setProjection(ProjectionSet projSet) {
+    this.projectionSet = projSet;
     return this;
   }
 
-  // TODO: No setter for vector length yet: is hard-coded
-  // at present in the value vector.
+  /**
+   * Provides context for error messages.
+   */
+  public OptionBuilder setContext(CustomErrorContext context) {
+    this.errorContext = context;
+    return this;
+  }
 
   public ResultSetOptions build() {
-    Preconditions.checkArgument(projection == null || projectionSet == null);
     return new ResultSetOptions(this);
   }
 }

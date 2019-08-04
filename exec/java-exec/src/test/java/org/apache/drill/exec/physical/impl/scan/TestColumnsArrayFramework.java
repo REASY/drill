@@ -17,12 +17,6 @@
  */
 package org.apache.drill.exec.physical.impl.scan;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
-
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
@@ -33,26 +27,29 @@ import org.apache.drill.common.types.TypeProtos.MinorType;
 import org.apache.drill.exec.physical.impl.scan.ScanTestUtils.ScanFixture;
 import org.apache.drill.exec.physical.impl.scan.ScanTestUtils.ScanFixtureBuilder;
 import org.apache.drill.exec.physical.impl.scan.TestFileScanFramework.DummyFileWork;
-import org.apache.drill.exec.physical.impl.scan.columns.ColumnsArrayManager;
 import org.apache.drill.exec.physical.impl.scan.columns.ColumnsScanFramework;
 import org.apache.drill.exec.physical.impl.scan.columns.ColumnsScanFramework.ColumnsScanBuilder;
 import org.apache.drill.exec.physical.impl.scan.columns.ColumnsSchemaNegotiator;
 import org.apache.drill.exec.physical.impl.scan.file.FileScanFramework.FileReaderFactory;
 import org.apache.drill.exec.physical.impl.scan.file.FileScanFramework.FileSchemaNegotiator;
 import org.apache.drill.exec.physical.impl.scan.framework.ManagedReader;
-import org.apache.drill.exec.physical.impl.scan.framework.ManagedScanFramework;
 import org.apache.drill.exec.physical.impl.scan.framework.ManagedScanFramework.ScanFrameworkBuilder;
 import org.apache.drill.exec.physical.rowSet.impl.RowSetTestUtils;
 import org.apache.drill.exec.record.metadata.SchemaBuilder;
 import org.apache.drill.exec.record.metadata.TupleMetadata;
 import org.apache.drill.exec.store.dfs.easy.FileWork;
+import org.apache.drill.shaded.guava.com.google.common.collect.Lists;
 import org.apache.drill.test.SubOperatorTest;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.mapred.FileSplit;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
-import org.apache.drill.shaded.guava.com.google.common.collect.Lists;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 
 
 /**
@@ -72,11 +69,9 @@ public class TestColumnsArrayFramework extends SubOperatorTest {
     }
 
     @Override
-    public ManagedReader<? extends FileSchemaNegotiator> newReader(
-        FileSplit split) {
+    public ManagedReader<? extends FileSchemaNegotiator> newReader() {
       DummyColumnsReader reader = readerIter.next();
       assert reader != null;
-      assert split.getPath().equals(reader.filePath());
       return reader;
     }
   }
@@ -98,7 +93,7 @@ public class TestColumnsArrayFramework extends SubOperatorTest {
     }
 
     @Override
-    protected ManagedScanFramework newFramework() {
+    public ScanFixture build() {
 
       // Bass-ackward construction of the list of files from
       // a set of text fixture readers. Normal implementations
@@ -112,7 +107,7 @@ public class TestColumnsArrayFramework extends SubOperatorTest {
       builder.setConfig(new Configuration());
       builder.setFiles(blocks);
       builder.setReaderFactory(new MockFileReaderFactory(readers));
-      return new ColumnsScanFramework(builder);
+      return super.build();
     }
   }
 
@@ -191,14 +186,15 @@ public class TestColumnsArrayFramework extends SubOperatorTest {
 
     DummyColumnsReader reader = new DummyColumnsReader(
         new SchemaBuilder()
-        .addArray(ColumnsArrayManager.COLUMNS_COL, MinorType.VARCHAR)
+        .addArray(ColumnsScanFramework.COLUMNS_COL, MinorType.VARCHAR)
         .buildSchema());
 
     // Create the scan operator
 
     ColumnsScanFixtureBuilder builder = new ColumnsScanFixtureBuilder();
-    builder.setProjection(RowSetTestUtils.projectList(ColumnsArrayManager.COLUMNS_COL));
+    builder.setProjection(RowSetTestUtils.projectList(ColumnsScanFramework.COLUMNS_COL));
     builder.addReader(reader);
+    builder.builder.requireColumnsArray(true);
     ScanFixture scanFixture = builder.build();
     ScanOperatorExec scan = scanFixture.scanOp;
 
@@ -224,16 +220,17 @@ public class TestColumnsArrayFramework extends SubOperatorTest {
 
     DummyColumnsReader reader = new DummyColumnsReader(
         new SchemaBuilder()
-        .addArray(ColumnsArrayManager.COLUMNS_COL, MinorType.VARCHAR)
+        .addArray(ColumnsScanFramework.COLUMNS_COL, MinorType.VARCHAR)
         .buildSchema());
 
     // Create the scan operator
 
     ColumnsScanFixtureBuilder builder = new ColumnsScanFixtureBuilder();
     builder.setProjection(Lists.newArrayList(
-        SchemaPath.parseFromString(ColumnsArrayManager.COLUMNS_COL + "[1]"),
-        SchemaPath.parseFromString(ColumnsArrayManager.COLUMNS_COL + "[3]")));
+        SchemaPath.parseFromString(ColumnsScanFramework.COLUMNS_COL + "[1]"),
+        SchemaPath.parseFromString(ColumnsScanFramework.COLUMNS_COL + "[3]")));
     builder.addReader(reader);
+    builder.builder.requireColumnsArray(true);
     ScanFixture scanFixture = builder.build();
     ScanOperatorExec scan = scanFixture.scanOp;
 

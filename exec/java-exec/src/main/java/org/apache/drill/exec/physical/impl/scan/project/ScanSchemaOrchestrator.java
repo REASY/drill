@@ -18,21 +18,26 @@
 package org.apache.drill.exec.physical.impl.scan.project;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 
+import org.apache.drill.common.exceptions.CustomErrorContext;
 import org.apache.drill.common.expression.SchemaPath;
 import org.apache.drill.common.types.TypeProtos.MajorType;
 import org.apache.drill.exec.memory.BufferAllocator;
-import org.apache.drill.exec.physical.impl.scan.project.ScanLevelProjection.ScanProjectionParser;
+import org.apache.drill.exec.ops.FragmentContext;
+import org.apache.drill.exec.physical.base.PhysicalOperator;
+import org.apache.drill.exec.physical.impl.protocol.OperatorDriver;
+import org.apache.drill.exec.physical.impl.protocol.OperatorRecordBatch;
+import org.apache.drill.exec.physical.impl.scan.ScanOperatorEvents;
+import org.apache.drill.exec.physical.impl.scan.ScanOperatorExec;
 import org.apache.drill.exec.physical.impl.scan.project.ReaderLevelProjection.ReaderProjectionResolver;
+import org.apache.drill.exec.physical.impl.scan.project.ScanLevelProjection.ScanProjectionParser;
+import org.apache.drill.exec.physical.impl.scan.project.projSet.TypeConverter;
 import org.apache.drill.exec.physical.rowSet.impl.ResultVectorCacheImpl;
-import org.apache.drill.exec.physical.rowSet.impl.SchemaTransformer;
-import org.apache.drill.exec.physical.rowSet.impl.SchemaTransformerImpl;
 import org.apache.drill.exec.record.VectorContainer;
 import org.apache.drill.exec.record.metadata.TupleMetadata;
 import org.apache.drill.exec.vector.ValueVector;
+import org.apache.drill.shaded.guava.com.google.common.annotations.VisibleForTesting;
 
 /**
  * Performs projection of a record reader, along with a set of static
@@ -154,7 +159,7 @@ public class ScanSchemaOrchestrator {
   public static final int DEFAULT_BATCH_BYTE_COUNT = ValueVector.MAX_BUFFER_SIZE;
   public static final int MAX_BATCH_ROW_COUNT = ValueVector.MAX_ROW_COUNT;
 
-  public static class ScanOrchestratorBuilder {
+  public abstract static class ScanOrchestratorBuilder {
 
     private MajorType nullType;
     private MetadataManager metadataManager;
@@ -165,9 +170,47 @@ public class ScanSchemaOrchestrator {
     private boolean useSchemaSmoothing;
     private boolean allowRequiredNullColumns;
     private List<SchemaPath> projection;
-    private TupleMetadata outputSchema;
-    private SchemaTransformer schemaTransformer;
-    private Map<String, String> conversionProps;
+    private TypeConverter.Builder typeConverterBuilder = TypeConverter.builder();
+
+    /**
+     * Option that enables whether the scan operator starts with an empty
+     * schema-only batch (the so-called "fast schema" that Drill once tried
+     * to provide) or starts with a non-empty data batch (which appears to
+     * be the standard since the "Empty Batches" project some time back.)
+     * See more details in {@link OperatorDriver} Javadoc.
+     * <p>
+     * Defaults to <tt>false</tt>, meaning to <i>not</i> provide the empty
+     * schema batch. DRILL-7305 explains that many operators fail when
+     * presented with an empty batch, so do not enable this feature until
+     * those issues are fixed. Of course, do enable the feature if you want
+     * to track down the DRILL-7305 bugs.
+     */
+
+    private boolean enableSchemaBatch;
+
+    /**
+     * Option to disable empty results. An empty result occurs if no
+     * reader has any data, but at least one reader can provide a schema.
+     * In this case, the scan can return a single, empty batch, with
+     * an associated schema. This is the correct SQL result for an
+     * empty query. However, if this result triggers empty-batch bugs
+     * in other operators, we can, instead, disable this feature and
+     * return a null result set: no schema, no batch, just a "fast NONE",
+     * an immediate return of NONE from the Volcano iterator.
+     * <p>
+     * Disabling this option is not desirable: it means that the user
+     * gets no schema for queries that should be able to return one. So,
+     * disable this option only if we cannot find or fix empty-batch
+     * bugs.
+     */
+
+    public boolean disableEmptyResults;
+
+    /**
+     * Context for error messages.
+     */
+
+    private CustomErrorContext errorContext;
 
     /**
      * Specify an optional metadata manager. Metadata is a set of constant
@@ -241,23 +284,37 @@ public class ScanSchemaOrchestrator {
       this.projection = projection;
     }
 
-    public void setOutputSchema(TupleMetadata schema) {
-      outputSchema = schema;
+    public void enableSchemaBatch(boolean option) {
+      enableSchemaBatch = option;
     }
 
-    public void setSchemaTransformer(SchemaTransformer transformer) {
-      this.schemaTransformer = transformer;
+    public void disableEmptyResults(boolean option) {
+      disableEmptyResults = option;
     }
 
-    public void setConversionProperty(String key, String value) {
-      if (key == null || value == null) {
-        return;
-      }
-      if (conversionProps == null) {
-        conversionProps = new HashMap<>();
-      }
-      conversionProps.put(key, value);
+    public TypeConverter.Builder typeConverterBuilder() {
+      return typeConverterBuilder;
     }
+
+    public void setContext(CustomErrorContext context) {
+      this.errorContext = context;
+    }
+
+    public CustomErrorContext errorContext() {
+      return errorContext;
+    }
+
+    @VisibleForTesting
+    public ScanOperatorExec buildScan() {
+      return new ScanOperatorExec(buildEvents(),
+          ! disableEmptyResults);
+    }
+
+    public OperatorRecordBatch buildScanOperator(FragmentContext fragContext, PhysicalOperator pop) {
+      return new OperatorRecordBatch(fragContext, pop, buildScan(), enableSchemaBatch);
+    }
+
+    public abstract ScanOperatorEvents buildEvents();
   }
 
   public static class ScanSchemaOptions {
@@ -284,7 +341,12 @@ public class ScanSchemaOrchestrator {
     public final List<SchemaPath> projection;
     public final boolean useSchemaSmoothing;
     public final boolean allowRequiredNullColumns;
-    public final SchemaTransformer schemaTransformer;
+    public final TypeConverter typeConverter;
+
+    /**
+     * Context for error messages.
+     */
+    public final CustomErrorContext context;
 
     protected ScanSchemaOptions(ScanOrchestratorBuilder builder) {
       nullType = builder.nullType;
@@ -294,20 +356,15 @@ public class ScanSchemaOrchestrator {
       schemaResolvers = builder.schemaResolvers;
       projection = builder.projection;
       useSchemaSmoothing = builder.useSchemaSmoothing;
-      boolean allowRequiredNulls = builder.allowRequiredNullColumns;
-      if (builder.schemaTransformer != null) {
-        // Use client-provided conversions
-        schemaTransformer = builder.schemaTransformer;
-      } else if (builder.outputSchema != null) {
-        // Use only implicit conversions
-        schemaTransformer = new SchemaTransformerImpl(builder.outputSchema, builder.conversionProps);
-        if (builder.outputSchema.getBooleanProperty(TupleMetadata.IS_STRICT_SCHEMA_PROP)) {
-          allowRequiredNulls = true;
-        }
-      } else {
-        schemaTransformer = null;
-      }
-      allowRequiredNullColumns = allowRequiredNulls;
+      context = builder.errorContext;
+      typeConverter = builder.typeConverterBuilder
+        .errorContext(builder.errorContext)
+        .build();
+      allowRequiredNullColumns = builder.allowRequiredNullColumns;
+    }
+
+    protected TupleMetadata outputSchema() {
+      return typeConverter == null ? null : typeConverter.providedSchema();
     }
   }
 
@@ -333,14 +390,14 @@ public class ScanSchemaOrchestrator {
    * vectors rather than vector instances, this cache can be deprecated.
    */
 
-  ResultVectorCacheImpl vectorCache;
-  ScanLevelProjection scanProj;
+  protected final ResultVectorCacheImpl vectorCache;
+  protected final ScanLevelProjection scanProj;
   private ReaderSchemaOrchestrator currentReader;
-  SchemaSmoother schemaSmoother;
+  protected final SchemaSmoother schemaSmoother;
 
   // Output
 
-  VectorContainer outputContainer;
+  protected VectorContainer outputContainer;
 
   public ScanSchemaOrchestrator(BufferAllocator allocator, ScanOrchestratorBuilder builder) {
     this.allocator = allocator;
@@ -372,13 +429,16 @@ public class ScanSchemaOrchestrator {
 
     // Parse the projection list.
 
-    TupleMetadata outputSchema = null;
-    if (options.schemaTransformer != null) {
-      outputSchema = options.schemaTransformer.outputSchema();
-    }
-    scanProj = new ScanLevelProjection(options.projection, options.parsers, outputSchema);
+    scanProj = ScanLevelProjection.builder()
+        .projection(options.projection)
+        .parsers(options.parsers)
+        .outputSchema(options.outputSchema())
+        .context(builder.errorContext())
+        .build();
     if (scanProj.projectAll() && options.useSchemaSmoothing) {
       schemaSmoother = new SchemaSmoother(scanProj, options.schemaResolvers);
+    } else {
+      schemaSmoother = null;
     }
 
     // Build the output container.
@@ -393,7 +453,7 @@ public class ScanSchemaOrchestrator {
   }
 
   public boolean isProjectNone() {
-    return scanProj.projectNone();
+    return scanProj.isEmptyProjection();
   }
 
   public boolean hasSchema() {

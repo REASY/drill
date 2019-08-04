@@ -18,13 +18,14 @@
 package org.apache.drill.exec.physical.impl.scan.columns;
 
 import org.apache.drill.common.exceptions.UserException;
+import org.apache.drill.exec.physical.impl.scan.project.AbstractUnresolvedColumn.UnresolvedColumn;
 import org.apache.drill.exec.physical.impl.scan.project.ColumnProjection;
 import org.apache.drill.exec.physical.impl.scan.project.ScanLevelProjection;
 import org.apache.drill.exec.physical.impl.scan.project.ScanLevelProjection.ScanProjectionParser;
-import org.apache.drill.exec.physical.impl.scan.project.AbstractUnresolvedColumn.UnresolvedColumn;
 import org.apache.drill.exec.physical.rowSet.project.RequestedColumnImpl;
 import org.apache.drill.exec.physical.rowSet.project.RequestedTuple.RequestedColumn;
-import org.apache.drill.exec.store.easy.text.compliant.v3.TextReader;
+import org.apache.drill.exec.store.easy.text.reader.TextReader;
+import org.apache.drill.shaded.guava.com.google.common.annotations.VisibleForTesting;
 
 /**
  * Parses the `columns` array. Doing so is surprisingly complex.
@@ -71,7 +72,20 @@ public class ColumnsArrayParser implements ScanProjectionParser {
 
   // Config
 
+  /**
+   * True if the project list must include either the columns[] array
+   * or the wildcard.
+   */
+
   private final boolean requireColumnsArray;
+
+  /**
+   * True if the project list can include columns other than/in addition to
+   * the columns[] array. Handy if the plugin provides special columns such
+   * as the log regex plugin.
+   */
+
+  private final boolean allowOtherCols;
 
   // Internals
 
@@ -81,8 +95,14 @@ public class ColumnsArrayParser implements ScanProjectionParser {
 
   private UnresolvedColumnsArrayColumn columnsArrayCol;
 
-  public ColumnsArrayParser(boolean requireColumnsArray) {
+  public ColumnsArrayParser(boolean requireColumnsArray, boolean allowOtherCols) {
     this.requireColumnsArray = requireColumnsArray;
+    this.allowOtherCols = allowOtherCols;
+  }
+
+  @VisibleForTesting
+  public ColumnsArrayParser(boolean requireColumnsArray) {
+    this(requireColumnsArray, false);
   }
 
   @Override
@@ -92,22 +112,40 @@ public class ColumnsArrayParser implements ScanProjectionParser {
 
   @Override
   public boolean parse(RequestedColumn inCol) {
-    if (requireColumnsArray && inCol.isWildcard()) {
+    if (! requireColumnsArray && ! allowOtherCols) {
+
+      // If we do not require the columns array, then we presume that
+      // the reader does not provide arrays, so any use of the columns[x]
+      // column is likely an error. We rely on the plugin's own error
+      // context to fill in information that would explain the issue
+      // in the context of that plugin.
+
+      if (inCol.isArray()) {
+        throw UserException
+            .validationError()
+            .message("Unexpected `columns`[x]; columns array not enabled")
+            .addContext(builder.context())
+            .build(logger);
+      }
+      return false;
+    }
+    if (inCol.isWildcard()) {
       createColumnsCol(
-          new RequestedColumnImpl(builder.rootProjection(), ColumnsArrayManager.COLUMNS_COL));
+          new RequestedColumnImpl(builder.rootProjection(), ColumnsScanFramework.COLUMNS_COL));
       return true;
     }
-    if (! inCol.nameEquals(ColumnsArrayManager.COLUMNS_COL)) {
+    if (! inCol.nameEquals(ColumnsScanFramework.COLUMNS_COL)) {
       return false;
     }
 
     // The columns column cannot be a map. That is, the following is
     // not allowed: columns.foo.
 
-    if (inCol.isTuple()) {
+    if (inCol.isTuple() && ! allowOtherCols) {
       throw UserException
         .validationError()
-        .message("{} has map elements, but cannot be a map", inCol.name())
+        .message("Column `%s` has map elements, but must be an array", inCol.name())
+        .addContext(builder.context())
         .build(logger);
     }
 
@@ -116,11 +154,12 @@ public class ColumnsArrayParser implements ScanProjectionParser {
       if (maxIndex > TextReader.MAXIMUM_NUMBER_COLUMNS) {
         throw UserException
           .validationError()
-          .message(String.format(
-              "`columns`[%d] index out of bounds, max supported size is %d",
-              maxIndex, TextReader.MAXIMUM_NUMBER_COLUMNS))
-          .addContext("Column", inCol.name())
-          .addContext("Maximum index", TextReader.MAXIMUM_NUMBER_COLUMNS)
+          .message("`columns`[%d] index out of bounds, max supported size is %d",
+              maxIndex, TextReader.MAXIMUM_NUMBER_COLUMNS)
+          .addContext("Column:", inCol.name())
+          .addContext("Maximum index:", TextReader.MAXIMUM_NUMBER_COLUMNS)
+          .addContext("Actual index:", maxIndex)
+          .addContext(builder.context())
           .build(logger);
       }
     }
@@ -149,14 +188,17 @@ public class ColumnsArrayParser implements ScanProjectionParser {
       if (columnsArrayCol != null) {
         throw UserException
           .validationError()
-          .message("Cannot select columns[] and other table columns. Column alias incorrectly used in the WHERE clause?")
+          .message("Cannot select columns[] and other table columns. "+
+              "Column alias incorrectly used in the WHERE clause?")
           .addContext("Column name", col.name())
+          .addContext(builder.context())
           .build(logger);
       }
-      if (requireColumnsArray) {
+      if (requireColumnsArray && ! allowOtherCols) {
         throw UserException
           .validationError()
           .message("Only `columns` column is allowed. Found: " + col.name())
+          .addContext(builder.context())
           .build(logger);
       }
     }

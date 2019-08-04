@@ -20,17 +20,18 @@ package org.apache.drill.exec.physical.impl.scan.project;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.apache.drill.common.exceptions.CustomErrorContext;
 import org.apache.drill.common.expression.SchemaPath;
 import org.apache.drill.exec.physical.impl.scan.project.AbstractUnresolvedColumn.UnresolvedColumn;
-import org.apache.drill.exec.physical.impl.scan.project.AbstractUnresolvedColumn.UnresolvedSchemaColumn;
 import org.apache.drill.exec.physical.impl.scan.project.AbstractUnresolvedColumn.UnresolvedWildcardColumn;
-import org.apache.drill.exec.physical.rowSet.project.RequestedColumnImpl;
+import org.apache.drill.exec.physical.impl.scan.project.projSet.ProjectionSetBuilder;
+import org.apache.drill.exec.physical.rowSet.project.ImpliedTupleRequest;
 import org.apache.drill.exec.physical.rowSet.project.RequestedTuple;
 import org.apache.drill.exec.physical.rowSet.project.RequestedTuple.RequestedColumn;
 import org.apache.drill.exec.physical.rowSet.project.RequestedTupleImpl;
 import org.apache.drill.exec.record.metadata.ColumnMetadata;
-import org.apache.drill.exec.record.metadata.ProjectionType;
 import org.apache.drill.exec.record.metadata.TupleMetadata;
+import org.apache.drill.shaded.guava.com.google.common.annotations.VisibleForTesting;
 
 /**
  * Parses and analyzes the projection list passed to the scanner. The
@@ -201,11 +202,6 @@ public class ScanLevelProjection {
              this == SCHEMA_WILDCARD ||
              this == STRICT_SCHEMA_WILDCARD;
     }
-
-    public boolean hasSchema() {
-      return this == SCHEMA_WILDCARD ||
-             this == STRICT_SCHEMA_WILDCARD;
-    }
   }
 
   /**
@@ -224,8 +220,67 @@ public class ScanLevelProjection {
     void build();
   }
 
+  public static class Builder {
+    private List<SchemaPath> projectionList;
+    private List<ScanProjectionParser> parsers = new ArrayList<>();
+    private TupleMetadata outputSchema;
+    /**
+     * Context used with error messages.
+     */
+    protected CustomErrorContext errorContext;
+
+    /**
+     * Specify the set of columns in the SELECT list. Since the column list
+     * comes from the query planner, assumes that the planner has checked
+     * the list for syntax and uniqueness.
+     *
+     * @param queryCols list of columns in the SELECT list in SELECT list order
+     * @return this builder
+     */
+    public Builder projection(List<SchemaPath> projectionList) {
+      this.projectionList = projectionList;
+      return this;
+    }
+
+    public Builder parsers(List<ScanProjectionParser> parsers) {
+      this.parsers.addAll(parsers);
+      return this;
+    }
+
+    public Builder outputSchema(TupleMetadata outputSchema) {
+      this.outputSchema = outputSchema;
+      return this;
+    }
+
+    public Builder context(CustomErrorContext context) {
+      this.errorContext = context;
+      return this;
+    }
+
+    public ScanLevelProjection build() {
+      return new ScanLevelProjection(this);
+    }
+
+    public TupleMetadata outputSchema( ) {
+      return outputSchema == null || outputSchema.size() == 0
+          ? null : outputSchema;
+    }
+
+    public List<SchemaPath> projectionList() {
+      if (projectionList == null) {
+        projectionList = new ArrayList<>();
+        projectionList.add(SchemaPath.STAR_COLUMN);
+      }
+      return projectionList;
+    }
+  }
+
   // Input
 
+  /**
+   * Context used with error messages.
+   */
+  protected final CustomErrorContext errorContext;
   protected final List<SchemaPath> projectionList;
   protected final TupleMetadata outputSchema;
 
@@ -257,27 +312,42 @@ public class ScanLevelProjection {
   protected RequestedTuple readerProjection;
   protected ScanProjectionType projectionType = ScanProjectionType.EMPTY;
 
-  /**
-   * Specify the set of columns in the SELECT list. Since the column list
-   * comes from the query planner, assumes that the planner has checked
-   * the list for syntax and uniqueness.
-   *
-   * @param queryCols list of columns in the SELECT list in SELECT list order
-   * @return this builder
-   */
-  public ScanLevelProjection(List<SchemaPath> projectionList,
-      List<ScanProjectionParser> parsers) {
-    this(projectionList, parsers, null);
+  private ScanLevelProjection(Builder builder) {
+    this.projectionList = builder.projectionList();
+    this.parsers = builder.parsers;
+    this.outputSchema = builder.outputSchema();
+    this.errorContext = builder.errorContext;
+    doParse();
   }
 
-  public ScanLevelProjection(List<SchemaPath> projectionList,
+  public static Builder builder() {
+    return new Builder();
+  }
+
+  /**
+   * Builder shortcut, primarily for tests.
+   */
+  @VisibleForTesting
+  public static ScanLevelProjection build(List<SchemaPath> projectionList,
+      List<ScanProjectionParser> parsers) {
+    return new Builder()
+        .projection(projectionList)
+        .parsers(parsers)
+        .build();
+  }
+
+  /**
+   * Builder shortcut, primarily for tests.
+   */
+  @VisibleForTesting
+  public static ScanLevelProjection build(List<SchemaPath> projectionList,
       List<ScanProjectionParser> parsers,
       TupleMetadata outputSchema) {
-    this.projectionList = projectionList;
-    this.parsers = parsers;
-    this.outputSchema = outputSchema == null || outputSchema.size() == 0
-        ? null : outputSchema;
-    doParse();
+    return new Builder()
+        .projection(projectionList)
+        .parsers(parsers)
+        .outputSchema(outputSchema)
+        .build();
   }
 
   private void doParse() {
@@ -323,18 +393,20 @@ public class ScanLevelProjection {
     // projection. With a schema, we want the schema columns (which may
     // or may not correspond to reader columns.)
 
-    List<RequestedColumn> outputProj;
-    if (projectionType == ScanProjectionType.WILDCARD) {
-      outputProj = null;
+    if (projectionType != ScanProjectionType.EMPTY &&
+        projectionType != ScanProjectionType.EXPLICIT) {
+
+      readerProjection = ImpliedTupleRequest.ALL_MEMBERS;
     } else {
-      outputProj = new ArrayList<>();
+
+      List<RequestedColumn> outputProj = new ArrayList<>();
       for (ColumnProjection col : outputCols) {
         if (col instanceof AbstractUnresolvedColumn) {
           outputProj.add(((AbstractUnresolvedColumn) col).element());
         }
       }
+      readerProjection = RequestedTupleImpl.build(outputProj);
     }
-    readerProjection = RequestedTupleImpl.build(outputProj);
   }
 
   /**
@@ -352,9 +424,9 @@ public class ScanLevelProjection {
       throw new IllegalArgumentException("Duplicate * entry in project list");
     }
 
-    // Expand schema columns, if provided
+    // Expand strict schema columns, if provided
 
-    expandOutputSchema();
+    boolean expanded = expandOutputSchema();
 
     // Remember the wildcard position, if we need to insert it.
     // Ensures that the main wildcard expansion occurs before add-on
@@ -378,9 +450,9 @@ public class ScanLevelProjection {
     // If not consumed, put the wildcard column into the projection list as a
     // placeholder to be filled in later with actual table columns.
 
-    if (hasOutputSchema()) {
+    if (expanded) {
       projectionType =
-          outputSchema.getBooleanProperty(TupleMetadata.IS_STRICT_SCHEMA_PROP)
+          outputSchema.booleanProperty(TupleMetadata.IS_STRICT_SCHEMA_PROP)
           ? ScanProjectionType.STRICT_SCHEMA_WILDCARD
           : ScanProjectionType.SCHEMA_WILDCARD;
     } else if (wildcardPosn != -1) {
@@ -389,9 +461,9 @@ public class ScanLevelProjection {
     }
   }
 
-  private void expandOutputSchema() {
+  private boolean expandOutputSchema() {
     if (outputSchema == null) {
-      return;
+      return false;
     }
 
     // Expand the wildcard. From the perspective of the reader, this is an explicit
@@ -401,10 +473,16 @@ public class ScanLevelProjection {
 
     for (int i = 0; i < outputSchema.size(); i++) {
       ColumnMetadata col = outputSchema.metadata(i);
-      RequestedColumn projCol = new RequestedColumnImpl(readerProjection, col.name(),
-          ProjectionType.typeFor(col.majorType()));
-      outputCols.add(new UnresolvedSchemaColumn(projCol, col));
+
+      // Skip columns tagged as "special"; those that should not expand
+      // automatically.
+
+      if (col.booleanProperty(ColumnMetadata.EXCLUDE_FROM_WILDCARD)) {
+        continue;
+      }
+      outputCols.add(new UnresolvedColumn(null, col));
     }
+    return true;
   }
 
   /**
@@ -448,7 +526,15 @@ public class ScanLevelProjection {
 
     // This is a desired table column.
 
-    addTableColumn(new UnresolvedColumn(inCol));
+    addTableColumn(inCol);
+  }
+
+  private void addTableColumn(RequestedColumn inCol) {
+    ColumnMetadata outputCol = null;
+    if (outputSchema != null) {
+      outputCol = outputSchema.metadata(inCol.name());
+    }
+    addTableColumn(new UnresolvedColumn(inCol, outputCol));
   }
 
   public void addTableColumn(ColumnProjection outCol) {
@@ -483,6 +569,8 @@ public class ScanLevelProjection {
       }
     }
   }
+
+  public CustomErrorContext context() { return errorContext; }
 
   /**
    * Return the set of columns from the SELECT list
@@ -520,11 +608,16 @@ public class ScanLevelProjection {
    * the wildcard)
    */
 
-  public boolean projectNone() { return projectionType == ScanProjectionType.EMPTY; }
+  public boolean isEmptyProjection() { return projectionType == ScanProjectionType.EMPTY; }
 
   public RequestedTuple rootProjection() { return outputProjection; }
 
-  public RequestedTuple readerProjection() { return readerProjection; }
+  public ProjectionSetBuilder projectionSet() {
+    return new ProjectionSetBuilder()
+      .outputSchema(outputSchema)
+      .parsedProjection(readerProjection)
+      .errorContext(errorContext);
+  }
 
   public boolean hasOutputSchema() { return outputSchema != null; }
 

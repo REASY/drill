@@ -18,6 +18,7 @@
 package org.apache.drill.exec.store.easy.text.compliant;
 
 import static org.apache.drill.test.rowSet.RowSetUtilities.strArray;
+
 import java.io.File;
 import java.io.IOException;
 
@@ -32,9 +33,8 @@ import org.junit.BeforeClass;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
 
-// CSV reader now hosted on the row set framework
 @Category(RowSetTests.class)
-public class TestCsvIgnoreHeaders  extends BaseCsvTest{
+public class TestCsvIgnoreHeaders extends BaseCsvTest{
 
   private static String withHeaders[] = {
       "a,b,c",
@@ -56,17 +56,6 @@ public class TestCsvIgnoreHeaders  extends BaseCsvTest{
 
   @Test
   public void testColumns() throws IOException {
-    try {
-      enableV3(false);
-      doTestColumns();
-      enableV3(true);
-      doTestColumns();
-    } finally {
-      resetV3();
-    }
-  }
-
-  private void doTestColumns() throws IOException {
     String fileName = "simple.csv";
     buildFile(fileName, withHeaders);
     String sql = "SELECT columns FROM `dfs.data`.`%s`";
@@ -85,17 +74,6 @@ public class TestCsvIgnoreHeaders  extends BaseCsvTest{
 
   @Test
   public void testRaggedRows() throws IOException {
-    try {
-      enableV3(false);
-      doTestRaggedRows();
-      enableV3(true);
-      doTestRaggedRows();
-    } finally {
-      resetV3();
-    }
-  }
-
-  private void doTestRaggedRows() throws IOException {
     String fileName = "ragged.csv";
     TestCsvWithHeaders.buildFile(new File(testDir, fileName), raggedRows);
     String sql = "SELECT columns FROM `dfs.data`.`%s`";

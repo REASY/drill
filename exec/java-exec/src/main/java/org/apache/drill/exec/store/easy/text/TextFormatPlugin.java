@@ -22,20 +22,20 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import org.apache.drill.common.exceptions.ChildErrorContext;
 import org.apache.drill.common.exceptions.ExecutionSetupException;
+import org.apache.drill.common.exceptions.UserException;
 import org.apache.drill.common.expression.SchemaPath;
 import org.apache.drill.common.logical.FormatPluginConfig;
 import org.apache.drill.common.logical.StoragePluginConfig;
-import org.apache.drill.common.types.TypeProtos.DataMode;
-import org.apache.drill.common.types.TypeProtos.MajorType;
 import org.apache.drill.common.types.TypeProtos.MinorType;
+import org.apache.drill.common.types.Types;
 import org.apache.drill.exec.ExecConstants;
 import org.apache.drill.exec.ops.FragmentContext;
 import org.apache.drill.exec.physical.base.AbstractGroupScan;
-import org.apache.drill.exec.physical.base.MetadataProviderManager;
+import org.apache.drill.exec.metastore.MetadataProviderManager;
 import org.apache.drill.exec.physical.base.ScanStats;
 import org.apache.drill.exec.physical.base.ScanStats.GroupScanProperty;
-import org.apache.drill.exec.planner.common.DrillStatsTable.TableStatistics;
 import org.apache.drill.exec.physical.impl.scan.columns.ColumnsScanFramework.ColumnsScanBuilder;
 import org.apache.drill.exec.physical.impl.scan.file.FileScanFramework.FileReaderFactory;
 import org.apache.drill.exec.physical.impl.scan.file.FileScanFramework.FileScanBuilder;
@@ -44,39 +44,60 @@ import org.apache.drill.exec.physical.impl.scan.framework.ManagedReader;
 import org.apache.drill.exec.planner.physical.PlannerSettings;
 import org.apache.drill.exec.proto.ExecProtos.FragmentHandle;
 import org.apache.drill.exec.proto.UserBitShared.CoreOperatorType;
+import org.apache.drill.exec.record.metadata.Propertied;
 import org.apache.drill.exec.server.DrillbitContext;
 import org.apache.drill.exec.server.options.OptionManager;
-import org.apache.drill.exec.store.RecordReader;
 import org.apache.drill.exec.store.RecordWriter;
-import org.apache.drill.exec.store.dfs.DrillFileSystem;
 import org.apache.drill.exec.store.dfs.FileSelection;
 import org.apache.drill.exec.store.dfs.easy.EasyFormatPlugin;
 import org.apache.drill.exec.store.dfs.easy.EasyGroupScan;
 import org.apache.drill.exec.store.dfs.easy.EasySubScan;
 import org.apache.drill.exec.store.dfs.easy.EasyWriter;
-import org.apache.drill.exec.store.dfs.easy.FileWork;
-import org.apache.drill.exec.store.easy.text.compliant.CompliantTextRecordReader;
-import org.apache.drill.exec.store.easy.text.compliant.TextParsingSettings;
-import org.apache.drill.exec.store.easy.text.compliant.v3.CompliantTextBatchReader;
-import org.apache.drill.exec.store.easy.text.compliant.v3.TextParsingSettingsV3;
+import org.apache.drill.exec.store.easy.text.reader.CompliantTextBatchReader;
+import org.apache.drill.exec.store.easy.text.reader.TextParsingSettings;
+import org.apache.drill.exec.store.easy.text.writer.TextRecordWriter;
 import org.apache.drill.exec.store.schedule.CompleteFileWork;
-import org.apache.drill.exec.store.text.DrillTextRecordReader;
-import org.apache.drill.exec.store.text.DrillTextRecordWriter;
 import org.apache.drill.exec.vector.accessor.convert.AbstractConvertFromString;
+import org.apache.drill.shaded.guava.com.google.common.collect.ImmutableList;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.FileSystem;
-import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.mapred.FileSplit;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonInclude.Include;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonTypeName;
-import org.apache.drill.shaded.guava.com.google.common.collect.ImmutableList;
+
+/**
+ * Text format plugin for CSV and other delimited text formats.
+ * Allows use of a "provided schema", including using table properties
+ * on that schema to override "static" ("or default") properties
+ * defined in the plugin config. Allows, say, having ".csv" files
+ * in which some have no headers (the default) and some do have
+ * headers (as specified via table properties in the provided schema.)
+ * <p>
+ * Makes use of the scan framework and the result set loader mechanism
+ * to allow tight control of the size of produced batches (as well
+ * as to support provided schema.)
+ */
 
 public class TextFormatPlugin extends EasyFormatPlugin<TextFormatPlugin.TextFormatConfig> {
   private final static String PLUGIN_NAME = "text";
+
+  // Provided schema table properties unique to this plugin. If specified
+  // in the provided schema, they override the corresponding property in
+  // the plugin config. Names here match the field names in the format config.
+  // The "text." intermediate name avoids potential conflicts with other
+  // uses of these names and denotes that the names work only for the text
+  // format plugin.
+
+  public static final String TEXT_PREFIX = Propertied.pluginPrefix(PLUGIN_NAME);
+  public static final String HAS_HEADERS_PROP = TEXT_PREFIX + "extractHeader";
+  public static final String SKIP_FIRST_LINE_PROP = TEXT_PREFIX + "skipFirstLine";
+  public static final String DELIMITER_PROP = TEXT_PREFIX + "fieldDelimiter";
+  public static final String COMMENT_CHAR_PROP = TEXT_PREFIX + "comment";
+  public static final String QUOTE_PROP = TEXT_PREFIX + "quote";
+  public static final String QUOTE_ESCAPE_PROP = TEXT_PREFIX + "escape";
+  public static final String LINE_DELIM_PROP = TEXT_PREFIX + "lineDelimiter";
 
   @JsonTypeName(PLUGIN_NAME)
   @JsonInclude(Include.NON_DEFAULT)
@@ -183,68 +204,15 @@ public class TextFormatPlugin extends EasyFormatPlugin<TextFormatPlugin.TextForm
    */
   private static class ColumnsReaderFactory extends FileReaderFactory {
 
-    private final TextFormatPlugin plugin;
+    private final TextParsingSettings settings;
 
-    public ColumnsReaderFactory(TextFormatPlugin plugin) {
-      this.plugin = plugin;
+    public ColumnsReaderFactory(TextParsingSettings settings) {
+      this.settings = settings;
     }
 
     @Override
-    public ManagedReader<? extends FileSchemaNegotiator> newReader(
-        FileSplit split) {
-      TextParsingSettingsV3 settings = new TextParsingSettingsV3();
-      settings.set(plugin.getConfig());
-      return new CompliantTextBatchReader(split, fileSystem(), settings);
-    }
-  }
-
-  /**
-   * Builds the V3 text scan operator.
-   */
-  private static class TextScanBatchCreator extends ScanFrameworkCreator {
-
-    private final TextFormatPlugin textPlugin;
-
-    public TextScanBatchCreator(TextFormatPlugin plugin) {
-      super(plugin);
-      textPlugin = plugin;
-    }
-
-    @Override
-    protected FileScanBuilder frameworkBuilder(
-        EasySubScan scan) throws ExecutionSetupException {
-      ColumnsScanBuilder builder = new ColumnsScanBuilder();
-      builder.setReaderFactory(new ColumnsReaderFactory(textPlugin));
-
-      // If this format has no headers, or wants to skip them,
-      // then we must use the columns column to hold the data.
-
-      builder.requireColumnsArray(
-          ! textPlugin.getConfig().isHeaderExtractionEnabled());
-
-      // Text files handle nulls in an unusual way. Missing columns
-      // are set to required Varchar and filled with blanks. Yes, this
-      // means that the SQL statement or code cannot differentiate missing
-      // columns from empty columns, but that is how CSV and other text
-      // files have been defined within Drill.
-
-      builder.setNullType(
-          MajorType.newBuilder()
-            .setMinorType(MinorType.VARCHAR)
-            .setMode(DataMode.REQUIRED)
-            .build());
-
-      // Pass along the output schema, if any
-
-      builder.setOutputSchema(scan.getSchema());
-
-      // CSV maps blank columns to nulls (for nullable non-string columns),
-      // or to the default value (for non-nullable non-string columns.)
-
-      builder.setConversionProperty(AbstractConvertFromString.BLANK_ACTION_PROP,
-          AbstractConvertFromString.BLANK_AS_NULL);
-
-      return builder;
+    public ManagedReader<? extends FileSchemaNegotiator> newReader() {
+       return new CompliantTextBatchReader(settings);
     }
   }
 
@@ -252,7 +220,8 @@ public class TextFormatPlugin extends EasyFormatPlugin<TextFormatPlugin.TextForm
      this(name, context, fsConf, storageConfig, new TextFormatConfig());
   }
 
-  public TextFormatPlugin(String name, DrillbitContext context, Configuration fsConf, StoragePluginConfig config,
+  public TextFormatPlugin(String name, DrillbitContext context,
+      Configuration fsConf, StoragePluginConfig config,
       TextFormatConfig formatPluginConfig) {
     super(name, easyConfig(fsConf, formatPluginConfig), context, config, formatPluginConfig);
   }
@@ -269,18 +238,21 @@ public class TextFormatPlugin extends EasyFormatPlugin<TextFormatPlugin.TextForm
     config.defaultName = PLUGIN_NAME;
     config.readerOperatorType = CoreOperatorType.TEXT_SUB_SCAN_VALUE;
     config.writerOperatorType = CoreOperatorType.TEXT_WRITER_VALUE;
+    config.useEnhancedScan = true;
     return config;
   }
 
   @Override
-  public AbstractGroupScan getGroupScan(String userName, FileSelection selection, List<SchemaPath> columns, MetadataProviderManager metadataProviderManager)
+  public AbstractGroupScan getGroupScan(String userName, FileSelection selection,
+      List<SchemaPath> columns, MetadataProviderManager metadataProviderManager)
       throws IOException {
     return new EasyGroupScan(userName, selection, this, columns, selection.selectionRoot, metadataProviderManager);
   }
 
   @Override
   public AbstractGroupScan getGroupScan(String userName, FileSelection selection,
-      List<SchemaPath> columns, OptionManager options, MetadataProviderManager metadataProviderManager) throws IOException {
+      List<SchemaPath> columns, OptionManager options,
+      MetadataProviderManager metadataProviderManager) throws IOException {
     return new EasyGroupScan(userName, selection, this, columns,
         selection.selectionRoot,
         // Some paths provide a null option manager. In that case, default to a
@@ -289,36 +261,53 @@ public class TextFormatPlugin extends EasyFormatPlugin<TextFormatPlugin.TextForm
   }
 
   @Override
-  protected ScanBatchCreator scanBatchCreator(OptionManager options) {
-    // Create the "legacy", "V2" reader or the new "V3" version based on
-    // the result set loader. This code should be temporary: the two
-    // readers provide identical functionality for the user; only the
-    // internals differ.
-    if (options.getBoolean(ExecConstants.ENABLE_V3_TEXT_READER_KEY)) {
-      return new TextScanBatchCreator(this);
-    } else {
-      return new ClassicScanBatchCreator(this);
-    }
-  }
+  protected FileScanBuilder frameworkBuilder(
+      OptionManager options, EasySubScan scan) throws ExecutionSetupException {
+    ColumnsScanBuilder builder = new ColumnsScanBuilder();
+    initScanBuilder(builder, scan);
+    TextParsingSettings settings =
+        new TextParsingSettings(getConfig(), scan, options);
+    builder.setReaderFactory(new ColumnsReaderFactory(settings));
 
-  // TODO: Remove this once the V2 reader is removed.
-  @Override
-  public RecordReader getRecordReader(FragmentContext context,
-                                      DrillFileSystem dfs,
-                                      FileWork fileWork,
-                                      List<SchemaPath> columns,
-                                      String userName) {
-    Path path = dfs.makeQualified(fileWork.getPath());
-    FileSplit split = new FileSplit(path, fileWork.getStart(), fileWork.getLength(), new String[]{""});
+    // If this format has no headers, or wants to skip them,
+    // then we must use the columns column to hold the data.
 
-    if (context.getOptions().getBoolean(ExecConstants.ENABLE_NEW_TEXT_READER_KEY)) {
-      TextParsingSettings settings = new TextParsingSettings();
-      settings.set(formatConfig);
-      return new CompliantTextRecordReader(split, dfs, settings, columns);
-    } else {
-      char delim = formatConfig.getFieldDelimiter();
-      return new DrillTextRecordReader(split, dfs.getConf(), context, delim, columns);
-    }
+    builder.requireColumnsArray(settings.isUseRepeatedVarChar());
+
+    // Text files handle nulls in an unusual way. Missing columns
+    // are set to required Varchar and filled with blanks. Yes, this
+    // means that the SQL statement or code cannot differentiate missing
+    // columns from empty columns, but that is how CSV and other text
+    // files have been defined within Drill.
+
+    builder.setNullType(Types.required(MinorType.VARCHAR));
+
+    // CSV maps blank columns to nulls (for nullable non-string columns),
+    // or to the default value (for non-nullable non-string columns.)
+
+    builder.typeConverterBuilder().setConversionProperty(
+        AbstractConvertFromString.BLANK_ACTION_PROP,
+        AbstractConvertFromString.BLANK_AS_NULL);
+
+    // The text readers use required Varchar columns to represent null columns.
+
+    builder.allowRequiredNullColumns(true);
+
+    // Provide custom error context
+
+    builder.setContext(
+        new ChildErrorContext(builder.errorContext()) {
+          @Override
+          public void addContext(UserException.Builder builder) {
+            super.addContext(builder);
+            builder.addContext("Extract headers:",
+                Boolean.toString(getConfig().isHeaderExtractionEnabled()));
+            builder.addContext("Skip first line:",
+                Boolean.toString(getConfig().isSkipFirstLine()));
+          }
+        });
+
+    return builder;
   }
 
   @Override
@@ -332,26 +321,11 @@ public class TextFormatPlugin extends EasyFormatPlugin<TextFormatPlugin.TextForm
     options.put("separator", getConfig().getFieldDelimiterAsString());
     options.put("extension", getConfig().getExtensions().get(0));
 
-    RecordWriter recordWriter = new DrillTextRecordWriter(
+    RecordWriter recordWriter = new TextRecordWriter(
         context.getAllocator(), writer.getStorageStrategy(), writer.getFormatPlugin().getFsConf());
     recordWriter.init(options);
 
     return recordWriter;
-  }
-
-  @Override
-  public boolean supportsStatistics() {
-    return false;
-  }
-
-  @Override
-  public TableStatistics readStatistics(FileSystem fs, Path statsTablePath) {
-    throw new UnsupportedOperationException("unimplemented");
-  }
-
-  @Override
-  public void writeStatistics(TableStatistics statistics, FileSystem fs, Path statsTablePath) {
-    throw new UnsupportedOperationException("unimplemented");
   }
 
   @Override

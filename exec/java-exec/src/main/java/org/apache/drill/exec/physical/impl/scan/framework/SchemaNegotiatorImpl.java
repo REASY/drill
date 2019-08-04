@@ -17,6 +17,7 @@
  */
 package org.apache.drill.exec.physical.impl.scan.framework;
 
+import org.apache.drill.common.exceptions.CustomErrorContext;
 import org.apache.drill.exec.ops.OperatorContext;
 import org.apache.drill.exec.physical.rowSet.ResultSetLoader;
 import org.apache.drill.exec.record.metadata.TupleMetadata;
@@ -56,6 +57,7 @@ public class SchemaNegotiatorImpl implements SchemaNegotiator {
 
   protected final ManagedScanFramework framework;
   private NegotiatorListener listener;
+  protected CustomErrorContext context;
   protected TupleMetadata tableSchema;
   protected boolean isSchemaComplete;
   protected int batchSize = ValueVector.MAX_ROW_COUNT;
@@ -74,6 +76,20 @@ public class SchemaNegotiatorImpl implements SchemaNegotiator {
   }
 
   @Override
+  public CustomErrorContext parentErrorContext() {
+    return framework.errorContext();
+  }
+
+  public CustomErrorContext errorContext() {
+    return context;
+  }
+
+  @Override
+  public void setErrorContext(CustomErrorContext context) {
+    this.context = context;
+  }
+
+  @Override
   public void setTableSchema(TupleMetadata schema, boolean isComplete) {
     tableSchema = schema;
     this.isSchemaComplete = schema != null && isComplete;
@@ -82,6 +98,11 @@ public class SchemaNegotiatorImpl implements SchemaNegotiator {
   @Override
   public void setBatchSize(int maxRecordsPerBatch) {
     batchSize = maxRecordsPerBatch;
+  }
+
+  @Override
+  public String userName() {
+    return framework.builder.userName;
   }
 
   /**

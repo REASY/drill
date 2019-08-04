@@ -29,10 +29,23 @@ import org.apache.drill.test.ClusterTest;
 
 public class BaseCsvTest extends ClusterTest {
 
+  protected final int BIG_COL_SIZE = 70_000;
+
   protected static final String PART_DIR = "root";
   protected static final String NESTED_DIR = "nested";
   protected static final String ROOT_FILE = "first.csv";
   protected static final String NESTED_FILE = "second.csv";
+  protected static final String EMPTY_FILE = "empty.csv";
+
+  /**
+   * The scan operator can return an empty schema batch as
+   * the first batch. But, this broke multiple operators that
+   * do not handle this case. So, it is turned off for now.
+   * Tests that verified the empty batch use this flag to
+   * disable that checking.
+   */
+
+  protected static boolean SCHEMA_BATCH_ENABLED = false;
 
   protected static String validHeaders[] = {
       "a,b,c",
@@ -78,14 +91,6 @@ public class BaseCsvTest extends ClusterTest {
     buildFile(new File(nestedDir, NESTED_FILE), secondFile);
   }
 
-  protected void enableV3(boolean enable) {
-    client.alterSession(ExecConstants.ENABLE_V3_TEXT_READER_KEY, enable);
-  }
-
-  protected void resetV3() {
-    client.resetSession(ExecConstants.ENABLE_V3_TEXT_READER_KEY);
-  }
-
   protected void enableMultiScan() {
 
     // Special test-only feature to force even small scans
@@ -117,5 +122,44 @@ public class BaseCsvTest extends ClusterTest {
         out.println(line);
       }
     }
+  }
+
+  protected String buildBigColFile(boolean withHeader) throws IOException {
+    String fileName = "hugeCol.csv";
+    try(PrintWriter out = new PrintWriter(new FileWriter(new File(testDir, fileName)))) {
+      if (withHeader) {
+        out.println("id,big,n");
+      }
+      for (int i = 0; i < 10; i++) {
+        out.print(i + 1);
+        out.print(",");
+        for (int j = 0; j < BIG_COL_SIZE; j++) {
+          out.print((char) ((j + i) % 26 + 'A'));
+        }
+        out.print(",");
+        out.println((i + 1) * 10);
+      }
+    }
+    return fileName;
+  }
+
+  protected static final String FILE_N_NAME = "file%d.csv";
+
+  protected static String buildTable(String tableName, String[]...fileContents) throws IOException {
+    File rootDir = new File(testDir, tableName);
+    rootDir.mkdir();
+    for (int i = 0; i < fileContents.length; i++) {
+      String fileName = String.format(FILE_N_NAME, i);
+      buildFile(new File(rootDir, fileName), fileContents[i]);
+    }
+    return "`dfs.data`.`" + tableName + "`";
+  }
+
+  protected void enableSchemaSupport() {
+    enableSchema(true);
+  }
+
+  protected void resetSchemaSupport() {
+    resetSchema();
   }
 }

@@ -28,6 +28,7 @@ import org.apache.drill.categories.RowSetTests;
 import org.apache.drill.common.types.TypeProtos.MinorType;
 import org.apache.drill.exec.physical.impl.protocol.SchemaTracker;
 import org.apache.drill.exec.physical.impl.scan.ScanTestUtils;
+import org.apache.drill.exec.physical.impl.scan.ScanTestUtils.MockScanBuilder;
 import org.apache.drill.exec.physical.impl.scan.file.FileMetadataColumn;
 import org.apache.drill.exec.physical.impl.scan.file.FileMetadataManager;
 import org.apache.drill.exec.physical.impl.scan.file.FileMetadataManager.FileMetadataOptions;
@@ -39,13 +40,13 @@ import org.apache.drill.exec.physical.rowSet.ResultSetLoader;
 import org.apache.drill.exec.physical.rowSet.impl.RowSetTestUtils;
 import org.apache.drill.exec.record.metadata.SchemaBuilder;
 import org.apache.drill.exec.record.metadata.TupleMetadata;
+import org.apache.drill.shaded.guava.com.google.common.collect.Lists;
 import org.apache.drill.test.SubOperatorTest;
 import org.apache.drill.test.rowSet.RowSet.SingleRowSet;
 import org.apache.drill.test.rowSet.RowSetComparison;
 import org.apache.hadoop.fs.Path;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
-import org.apache.drill.shaded.guava.com.google.common.collect.Lists;
 
 /**
  * Tests schema smoothing at the schema projection level.
@@ -117,7 +118,7 @@ public class TestSchemaSmoothing extends SubOperatorTest {
 
     // Set up the scan level projection
 
-    ScanLevelProjection scanProj = new ScanLevelProjection(
+    ScanLevelProjection scanProj = ScanLevelProjection.build(
         RowSetTestUtils.projectList(ScanTestUtils.FILE_NAME_COL, "a", "b"),
         ScanTestUtils.parsers(metadataManager.projectionParser()));
 
@@ -203,7 +204,7 @@ public class TestSchemaSmoothing extends SubOperatorTest {
 
   @Test
   public void testSmoothingProjection() {
-    final ScanLevelProjection scanProj = new ScanLevelProjection(
+    final ScanLevelProjection scanProj = ScanLevelProjection.build(
         RowSetTestUtils.projectAll(),
         ScanTestUtils.parsers());
 
@@ -305,7 +306,7 @@ public class TestSchemaSmoothing extends SubOperatorTest {
 
   @Test
   public void testSmaller() {
-    final ScanLevelProjection scanProj = new ScanLevelProjection(
+    final ScanLevelProjection scanProj = ScanLevelProjection.build(
         RowSetTestUtils.projectAll(),
         ScanTestUtils.parsers());
 
@@ -343,7 +344,7 @@ public class TestSchemaSmoothing extends SubOperatorTest {
 
   @Test
   public void testDisjoint() {
-    final ScanLevelProjection scanProj = new ScanLevelProjection(
+    final ScanLevelProjection scanProj = ScanLevelProjection.build(
         RowSetTestUtils.projectAll(),
         ScanTestUtils.parsers());
 
@@ -380,7 +381,7 @@ public class TestSchemaSmoothing extends SubOperatorTest {
 
   @Test
   public void testDifferentTypes() {
-    final ScanLevelProjection scanProj = new ScanLevelProjection(
+    final ScanLevelProjection scanProj = ScanLevelProjection.build(
         RowSetTestUtils.projectAll(),
         ScanTestUtils.parsers());
 
@@ -414,7 +415,7 @@ public class TestSchemaSmoothing extends SubOperatorTest {
 
   @Test
   public void testSameSchemas() {
-    final ScanLevelProjection scanProj = new ScanLevelProjection(
+    final ScanLevelProjection scanProj = ScanLevelProjection.build(
         RowSetTestUtils.projectAll(),
         ScanTestUtils.parsers());
 
@@ -449,7 +450,7 @@ public class TestSchemaSmoothing extends SubOperatorTest {
 
   @Test
   public void testDifferentCase() {
-    final ScanLevelProjection scanProj = new ScanLevelProjection(
+    final ScanLevelProjection scanProj = ScanLevelProjection.build(
         RowSetTestUtils.projectAll(),
         ScanTestUtils.parsers());
 
@@ -484,7 +485,7 @@ public class TestSchemaSmoothing extends SubOperatorTest {
 
   @Test
   public void testRequired() {
-    final ScanLevelProjection scanProj = new ScanLevelProjection(
+    final ScanLevelProjection scanProj = ScanLevelProjection.build(
         RowSetTestUtils.projectAll(),
         ScanTestUtils.parsers());
 
@@ -516,7 +517,7 @@ public class TestSchemaSmoothing extends SubOperatorTest {
 
   @Test
   public void testMissingNullableColumns() {
-    final ScanLevelProjection scanProj = new ScanLevelProjection(
+    final ScanLevelProjection scanProj = ScanLevelProjection.build(
         RowSetTestUtils.projectAll(),
         ScanTestUtils.parsers());
 
@@ -549,7 +550,7 @@ public class TestSchemaSmoothing extends SubOperatorTest {
 
   @Test
   public void testReordering() {
-    final ScanLevelProjection scanProj = new ScanLevelProjection(
+    final ScanLevelProjection scanProj = ScanLevelProjection.build(
         RowSetTestUtils.projectAll(),
         ScanTestUtils.parsers());
 
@@ -594,7 +595,7 @@ public class TestSchemaSmoothing extends SubOperatorTest {
 
     // Set up the scan level projection
 
-    ScanLevelProjection scanProj = new ScanLevelProjection(
+    ScanLevelProjection scanProj = ScanLevelProjection.build(
         ScanTestUtils.projectAllWithMetadata(2),
         ScanTestUtils.parsers(metadataManager.projectionParser()));
 
@@ -641,7 +642,7 @@ public class TestSchemaSmoothing extends SubOperatorTest {
 
     // Set up the scan level projection
 
-    ScanLevelProjection scanProj = new ScanLevelProjection(
+    ScanLevelProjection scanProj = ScanLevelProjection.build(
         ScanTestUtils.projectAllWithMetadata(2),
         ScanTestUtils.parsers(metadataManager.projectionParser()));
 
@@ -688,7 +689,7 @@ public class TestSchemaSmoothing extends SubOperatorTest {
 
     // Set up the scan level projection
 
-    ScanLevelProjection scanProj = new ScanLevelProjection(
+    ScanLevelProjection scanProj = ScanLevelProjection.build(
         ScanTestUtils.projectAllWithMetadata(2),
         ScanTestUtils.parsers(metadataManager.projectionParser()));
 
@@ -722,7 +723,7 @@ public class TestSchemaSmoothing extends SubOperatorTest {
 
   @Test
   public void testSmoothableSchemaBatches() {
-    final ScanLevelProjection scanProj = new ScanLevelProjection(
+    final ScanLevelProjection scanProj = ScanLevelProjection.build(
         RowSetTestUtils.projectAll(),
         ScanTestUtils.parsers());
 
@@ -816,7 +817,7 @@ public class TestSchemaSmoothing extends SubOperatorTest {
 
   @Test
   public void testWildcardSmoothing() {
-    ScanOrchestratorBuilder builder = new ScanOrchestratorBuilder();
+    ScanOrchestratorBuilder builder = new MockScanBuilder();
     builder.enableSchemaSmoothing(true);
     builder.setProjection(RowSetTestUtils.projectAll());
     final ScanSchemaOrchestrator projector = new ScanSchemaOrchestrator(fixture.allocator(), builder);

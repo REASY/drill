@@ -531,7 +531,12 @@ public final class ExecConstants {
   public static final String HIVE_READ_MAPRDB_JSON_TIMESTAMP_WITH_TIMEZONE_OFFSET = "store.hive.maprdb_json.read_timestamp_with_timezone_offset";
   public static final OptionValidator HIVE_READ_MAPRDB_JSON_TIMESTAMP_WITH_TIMEZONE_OFFSET_VALIDATOR =
       new BooleanValidator(HIVE_READ_MAPRDB_JSON_TIMESTAMP_WITH_TIMEZONE_OFFSET,
-          new OptionDescription("Enables Drill to read timestamp values with timezone offset when hive plugin is used and Drill native MaprDB JSON reader usage is enabled. (Drill 1.16+)"));
+          new OptionDescription("Enables Drill to read timestamp values with timezone offset when Hive plugin is used and Drill native MaprDB JSON reader usage is enabled. (Drill 1.16+)"));
+
+  public static final String HIVE_MAPRDB_JSON_ALL_TEXT_MODE = "store.hive.maprdb_json.all_text_mode";
+  public static final OptionValidator HIVE_MAPRDB_JSON_ALL_TEXT_MODE_VALIDATOR =
+      new BooleanValidator(HIVE_MAPRDB_JSON_ALL_TEXT_MODE,
+          new OptionDescription("Drill reads all data from the maprDB Json tables as VARCHAR when hive plugin is used and Drill native MaprDB JSON reader usage is enabled. Prevents schema change errors. (Drill 1.17+)"));
 
   public static final String HIVE_CONF_PROPERTIES = "store.hive.conf.properties";
   public static final OptionValidator HIVE_CONF_PROPERTIES_VALIDATOR = new StringValidator(HIVE_CONF_PROPERTIES,
@@ -713,13 +718,28 @@ public final class ExecConstants {
   public static final OptionValidator ENABLE_VERBOSE_ERRORS = new BooleanValidator(ENABLE_VERBOSE_ERRORS_KEY,
       new OptionDescription("Toggles verbose output of executable error messages"));
 
+  /**
+   * Key used in earlier versions to use the original ("V1") text reader. Since at least Drill 1.8
+   * users have used the ("compliant") ("V2") version. Deprecated in Drill 1.17; the "V3" reader
+   * with schema support is always used. Retained for backward compatibility, but does
+   * nothing.
+   */
+  @Deprecated
   public static final String ENABLE_NEW_TEXT_READER_KEY = "exec.storage.enable_new_text_reader";
+  @Deprecated
   public static final OptionValidator ENABLE_NEW_TEXT_READER = new BooleanValidator(ENABLE_NEW_TEXT_READER_KEY,
-      new OptionDescription("Enables the text reader that complies with the RFC 4180 standard for text/csv files."));
+      new OptionDescription("Deprecated. Drill's text reader complies with the RFC 4180 standard for text/csv files."));
 
+  /**
+   * Flag used in Drill 1.16 to select the row-set based ("V3") or the original
+   * "compliant" ("V2") text reader. In Drill 1.17, the "V3" version is always
+   * used. Retained for backward compatibility, but does nothing.
+   */
+  @Deprecated
   public static final String ENABLE_V3_TEXT_READER_KEY = "exec.storage.enable_v3_text_reader";
+  @Deprecated
   public static final OptionValidator ENABLE_V3_TEXT_READER = new BooleanValidator(ENABLE_V3_TEXT_READER_KEY,
-      new OptionDescription("Enables the row set based version of the text/csv reader."));
+      new OptionDescription("Deprecated. The \"V3\" text reader is always used."));
 
   public static final String MIN_READER_WIDTH_KEY = "exec.storage.min_width";
   public static final OptionValidator MIN_READER_WIDTH = new LongValidator(MIN_READER_WIDTH_KEY,
